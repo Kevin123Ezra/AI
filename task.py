@@ -1,134 +1,100 @@
-import sys
-import os
-import pickle
-from PyQt5.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QHBoxLayout, QPushButton, QLineEdit, QDateEdit, QListWidget, QListWidgetItem, QCheckBox, QWidget, QLabel
-from PyQt5.QtCore import Qt, QDate
+import streamlit as st
+from langchain_community.document_loaders import TextLoader, PyPDFLoader, Docx2txtLoader
+from langchain.text_splitter import CharacterTextSplitter
+from langchain_groq import ChatGroq
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.output_parsers import StrOutputParser
+from dotenv import load_dotenv
 
-class HomeworkApp(QMainWindow):
-    def __init__(self):
-        super().__init__()
-        self.setWindowTitle("Homework Tracker")
-        self.setGeometry(100, 100, 600, 400)
-        
-        self.task_list = QListWidget()
+load_dotenv()
 
-        self.task_input = QLineEdit(self)
-        self.task_input.setPlaceholderText("Enter homework task...")
+st.title("AI Summarizer App")
+st.divider()
 
-        self.desc_input = QLineEdit(self)
-        self.desc_input.setPlaceholderText("Enter task description...")
+st.markdown("## Start summarizing your documents with AI!")
 
-        self.date_input = QDateEdit(self)
-        self.date_input.setDisplayFormat("dd/MM/yyyy")
-        self.date_input.setDate(QDate.currentDate())
+uploading_file = st.file_uploader("Upload a text, pdf or docx file", type=["pdf", "txt", "docx"])
 
-        self.add_button = QPushButton("Add Task", self)
-        self.add_button.clicked.connect(self.add_task)
+llm = ChatGroq(model="llama-3.1-8b-instant")
 
-        # Layout setup
-        layout = QVBoxLayout()
-        input_layout = QHBoxLayout()
-        input_layout.addWidget(self.task_input)
-        input_layout.addWidget(self.desc_input)
-        input_layout.addWidget(self.date_input)
-        input_layout.addWidget(self.add_button)
-        
-        layout.addLayout(input_layout)
-        layout.addWidget(self.task_list)
-        
-        widget = QWidget()
-        widget.setLayout(layout)
-        self.setCentralWidget(widget)
+parser = StrOutputParser()
 
-        self.load_tasks()
+prompt_template = ChatPromptTemplate.from_template("Summarize the following document: {document}")
 
-    def add_task(self):
-        task_text = self.task_input.text().strip()
-        task_desc = self.desc_input.text().strip()
-        task_date = self.date_input.text().strip()
+#chain = prompt_template | llm | parser 
 
-        if task_text == "" or task_desc == "":
-            return
+if uploading_file is not None:
+    with st.spinner("Processing..."):
+        try:
+            temp_file_path = uploading_file.name
 
-        task_data = (task_text, task_desc, False, task_date)  # Text, Description, Not Checked, Date
-        self.save_task(task_data)
-        self.add_task_to_list(task_text, task_desc, False, task_date)
+            print("File name:", uploading_file)
+            print("File path:", temp_file_path)
+            print("File type:", uploading_file.type)
+            print("File size:", uploading_file.size)
 
-        self.task_input.clear()
-        self.desc_input.clear()
+            with open(temp_file_path, "wb") as f:
+                f.write(uploading_file.getbuffer())
+            
+            if uploading_file.type == "application/pdf":
+                loader = PyPDFLoader(temp_file_path)
+                
+            elif uploading_file.type == "text/plain":
+                loader = TextLoader(temp_file_path)
 
-    def add_task_to_list(self, task_text, task_desc, is_checked, task_date):
-        """Add a task with a checkbox and description to the list."""
-        item = QListWidgetItem()
+            elif uploading_file.type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+                loader = Docx2txtLoader(temp_file_path)
 
-        checkbox = QCheckBox()
-        checkbox.setChecked(is_checked)
+            else:
+                st.error("Unsupported file type!")
+                st.stop()
+            
+            # loader
+            documents = loader.load() 
+            print(documents)
 
-        task_label = QLabel(f"{task_text} - {task_desc} ({task_date})")
+            text_splitter = CharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
+            chunks = text_splitter.split_documents(documents)
 
-        widget = QWidget()
-        layout = QHBoxLayout()
-        layout.addWidget(checkbox)
-        layout.addWidget(task_label)
-        layout.addStretch()
-        widget.setLayout(layout)
+        except Exception as e:
+            st.error(f"Error processing file: {e}")
+            st.stop()
+    
+    st.success("File uploaded successfully!")
 
-        item.setSizeHint(widget.sizeHint())
-        self.task_list.addItem(item)
-        self.task_list.setItemWidget(item, widget)
+if st.button("Generate Summary"):
+    container = st.empty()
+    chunk_summaries = []
+    if uploading_file is None:
+        st.error("Please upload a file first!")
+        st.stop()
+    
+    with st.spinner("Generating summary..."):
+        try:
+            for chunk in chunks:
+                chunk_prompt = ChatPromptTemplate.from_template("You are a highly skilled AI tasked with summarizing text, Please summariz the follwoing chunk of text (with respect to the previous chunk if any), Highlighting the most important points, without omiting any information: {document}")
+                chunk_chain = chunk_prompt | llm | parser
+                chunk_summary = chunk_chain.invoke({"document": chunk})
+                chunk_summaries.append(chunk_summary)
 
-        checkbox.toggled.connect(lambda checked, label=task_label: self.toggle_task_state(checked, label))
+        except Exception as e:
+            st.error(f"Error generating summary: {e}")
+            st.stop()
+    
+    with st.spinner("Creating final summary..."):
+        try:
+            combined_summaries = "\n".join(chunk_summaries)
+            final_prompt = ChatPromptTemplate.from_template( "You are an expert summarizer tasked with creating a final summary from summarized chunks, Combine the key points from the provided summaries into a cohesive and comprehensive summary, The final summary should be concise but detailed enough to capture the main ideas:\n\n"
+                "{document}")
+            
+            final_chain = final_prompt | llm | parser
+            final_summary = final_chain.invoke({"document": combined_summaries})
 
-        if is_checked:
-            task_label.setText(f"<s>{task_label.text()}</s>")
-        
-    def toggle_task_state(self, checked, task_label):
-        if checked:
-            task_label.setText(f"<s>{task_label.text()}</s>")
-        else:
-            task_label.setText(task_label.text().replace("<s>", "").replace("</s>", ""))
-        
-        task_text = task_label.text().split(" - ")[0]
-        self.update_task_state(task_text, checked)
+            print("Final Summary:", final_summary)
+            container.write(final_summary)
 
-    def update_task_state(self, task_text, is_checked):
-        tasks = self.load_saved_tasks()
-        for i, (text, desc, _, date) in enumerate(tasks):
-            if text == task_text:
-                tasks[i] = (text, desc, is_checked, date)
-                break
-        self.save_tasks(tasks)
+            st.download_button(label ="Download Summary", data=final_summary, file_name=f"Summary of {uploading_file.name}.txt", mime="text/plain")
 
-    def save_task(self, task_data):
-        tasks = self.load_saved_tasks()
-        tasks.append(task_data)
-        self.save_tasks(tasks)
-
-    def save_tasks(self, tasks):
-        with open('tasks.pkl', 'wb') as file:
-            pickle.dump(tasks, file)
-
-    def load_saved_tasks(self):
-        if os.path.exists('tasks.pkl'):
-            with open('tasks.pkl', 'rb') as file:
-                tasks = pickle.load(file)
-
-                for i, task in enumerate(tasks):
-                    if len(task) == 3:
-                        tasks[i] = (task[0], task[1], False, QDate.currentDate().toString("dd/MM/yyyy"))
-                    elif len(task) == 2:
-                        tasks[i] = (task[0], "", False, QDate.currentDate().toString("dd/MM/yyyy"))
-                return tasks
-        return []
-
-    def load_tasks(self):
-        tasks = self.load_saved_tasks()
-        for task_text, task_desc, is_checked, task_date in tasks:
-            self.add_task_to_list(task_text, task_desc, is_checked, task_date)
-
-
-if __name__ == "__main__":
-    app = QApplication(sys.argv)
-    window = HomeworkApp()
-    window.show()
-    sys.exit(app.exec_())
+        except Exception as e:
+            st.error(f"Error creating final summary: {e}")
+            st.stop()

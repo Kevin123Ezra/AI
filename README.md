@@ -1,6 +1,4 @@
-# Create a README.md file with the provided content
-
-readme_content = """# 🧠 AI Document Summarizer App  
+🧠 AI Document Summarizer App  
 
 A **Streamlit-based AI-powered summarizer** that allows you to upload documents (PDF, DOCX, or TXT) and get concise, meaningful summaries generated using **Groq’s LLaMA 3.1 model** via the **LangChain** framework.  
 
